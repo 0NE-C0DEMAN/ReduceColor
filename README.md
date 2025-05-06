@@ -14,7 +14,7 @@ A user-friendly Streamlit app to reduce the number of colors in an image, previe
 ## Installation
 1. **Clone this repository**
    ```bash
-   git clone <your-repo-url>
+   git clone [<your-repo-url>](https://github.com/0NE-C0DEMAN/ReduceColor)
    cd ReduceColor
    ```
 2. **(Recommended) Create a virtual environment**
