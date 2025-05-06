@@ -153,7 +153,7 @@ def main():
         col1, col2 = st.columns(2)
         with col1:
             st.subheader("Original Image")
-            st.image(image, use_column_width=True)
+            st.image(image, use_container_width=True)
         # Make the number input look nice and not too wide
         st.markdown("""
         <style>
@@ -180,7 +180,7 @@ def main():
         reduced_image = color_reducer.reduce_colors()
         with col2:
             st.subheader("Reduced Color Image")
-            st.image(reduced_image, use_column_width=True)
+            st.image(reduced_image, use_container_width=True)
         # Show the palette and how much of the image each color covers
         st.subheader("Color Palette")
         colors = color_reducer.get_color_palette()
