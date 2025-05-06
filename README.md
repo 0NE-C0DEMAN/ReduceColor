@@ -40,12 +40,6 @@ A user-friendly Streamlit app to reduce the number of colors in an image, previe
 - Lets you substitute palette colors by cluster, so replacements are always accurate
 - PDF export uses ReportLab for high-quality, print-ready output
 
-## Example Use Cases
-- Create paint-by-number templates
-- Prepare images for screen printing, embroidery, or vinyl cutting
-- Stylize photos for digital art or posters
-- Extract color palettes for design inspiration
-
 ## Requirements
 - Python 3.8+
 - See `requirements.txt` for all dependencies
