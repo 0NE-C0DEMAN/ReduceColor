@@ -43,16 +43,27 @@ class ColorReducer:
         reduced_img_lab = reduced_pixels_lab.reshape(img_lab.shape)
         # Convert back to RGB so we can display and save the image
         reduced_img_rgb = cv2.cvtColor(reduced_img_lab, cv2.COLOR_LAB2RGB)
-        # If the user wants to swap out any colors, let's do that now
+        # Apply color substitution using the replace_color logic
         if self.color_mapping:
-            flat_img = reduced_img_rgb.reshape(-1, 3)
-            for cluster_idx, new_color in self.color_mapping.items():
-                # Replace all pixels belonging to the selected cluster
-                mask = (self.labels == cluster_idx)
-                flat_img[mask] = new_color
-            reduced_img_rgb = flat_img.reshape(reduced_img_rgb.shape)
+            reduced_img_rgb = self.apply_color_substitution(reduced_img_rgb)
         self.reduced_image = reduced_img_rgb
         return Image.fromarray(np.uint8(self.reduced_image))
+
+    def apply_color_substitution(self, image_array):
+        """
+        Applies color substitution to the reduced image using the replace_color logic.
+
+        Args:
+            image_array (numpy.ndarray): The reduced image as a NumPy array.
+
+        Returns:
+            numpy.ndarray: The modified image with color substitutions applied.
+        """
+        substitutor = ColorSubstitutor()
+        for cluster_idx, new_color in self.color_mapping.items():
+            old_color = tuple(map(int, self.colors[cluster_idx]))  # Convert LAB cluster center to RGB
+            image_array = substitutor.apply(image_array, old_color, new_color)
+        return image_array
     
     def get_color_palette(self):
         if self.colors is None:
@@ -60,6 +71,11 @@ class ColorReducer:
         # Convert the LAB cluster centers to RGB for display
         lab_colors = np.clip(self.colors, 0, 255).astype(np.uint8).reshape(-1, 1, 3)
         rgb_colors = cv2.cvtColor(lab_colors, cv2.COLOR_LAB2RGB).reshape(-1, 3)
+
+        # Apply substitutions from color_mapping
+        for cluster_idx, new_color in self.color_mapping.items():
+            rgb_colors[cluster_idx] = new_color
+
         # Format as hex codes for easy use in the UI
         hex_colors = ['#%02x%02x%02x' % tuple(color) for color in rgb_colors]
         return hex_colors
@@ -79,7 +95,20 @@ class ColorReducer:
         unique_labels, counts = np.unique(self.labels, return_counts=True)
         total_pixels = len(self.labels)
         percentages = (counts / total_pixels) * 100
-        return list(zip(self.get_color_palette(), percentages))
+
+        # Get the updated palette with substitutions applied
+        lab_colors = np.clip(self.colors, 0, 255).astype(np.uint8).reshape(-1, 1, 3)
+        rgb_colors = cv2.cvtColor(lab_colors, cv2.COLOR_LAB2RGB).reshape(-1, 3)
+
+        # Apply substitutions from color_mapping
+        for cluster_idx, new_color in self.color_mapping.items():
+            rgb_colors[cluster_idx] = new_color
+
+        # Format as hex codes for easy use in the UI
+        hex_colors = ['#%02x%02x%02x' % tuple(color) for color in rgb_colors]
+
+        # Return the updated color distribution
+        return list(zip(hex_colors, percentages))
     
     def set_color_substitution(self, cluster_idx, new_color):
         # This will update the mapping for color substitution
@@ -137,6 +166,112 @@ class ColorReducer:
         except:
             pass
         return buffer
+
+    def generate_substituted_pdf(self, page_size='A4', substituted_image=None):
+        """
+        Generates a PDF with the substituted image and color palette details.
+
+        Args:
+            page_size (str): The page size for the PDF (default is 'A4').
+            substituted_image (PIL.Image.Image): The substituted image to include in the PDF.
+
+        Returns:
+            io.BytesIO: A buffer containing the PDF data.
+        """
+        if substituted_image is None:
+            return None
+
+        # Map the page size string to the actual dimensions
+        page_sizes = {
+            'A4': A4,
+            'A3': A3,
+            'A2': A2,
+            'A1': A1,
+            'A0': A0
+        }
+        buffer = io.BytesIO()
+        c = canvas.Canvas(buffer, pagesize=page_sizes[page_size])
+
+        # Convert the substituted image to a PIL Image for saving
+        img = substituted_image
+        img_width, img_height = img.size
+        page_width, page_height = page_sizes[page_size]
+        margin = 50  # Give it a nice margin
+        max_width = page_width - 2 * margin
+        max_height = page_height - 2 * margin
+        scale = min(max_width / img_width, max_height / img_height)
+        new_width = img_width * scale
+        new_height = img_height * scale
+        x = (page_width - new_width) / 2
+        y = (page_height - new_height) / 2
+
+        # Save the image temporarily so reportlab can use it
+        temp_img_path = "temp_substituted_image.png"
+        img.save(temp_img_path)
+        c.drawImage(temp_img_path, x, y, width=new_width, height=new_height)
+
+        # Add the updated color palette below the image for reference
+        y_offset = y - 20
+        updated_distribution = self.get_color_distribution()  # Get updated palette and percentages
+        for color, percentage in updated_distribution:
+            c.setFillColorRGB(
+                int(color[1:3], 16) / 255.0,
+                int(color[3:5], 16) / 255.0,
+                int(color[5:7], 16) / 255.0
+            )  # Convert hex to RGB for ReportLab
+            c.rect(x, y_offset, 20, 20, fill=1)
+            c.setFillColor('black')
+            c.drawString(x + 30, y_offset + 5, f"{color} ({percentage:.1f}%)")
+            y_offset -= 25
+
+        c.save()
+        buffer.seek(0)
+
+        # Clean up the temp file
+        try:
+            os.remove(temp_img_path)
+        except:
+            pass
+
+        return buffer
+
+class ColorSubstitutor:
+    def __init__(self, tolerance=20):
+        """
+        Initializes the ColorSubstitutor with a tolerance level.
+
+        Args:
+            tolerance (int): The tolerance level for color matching (default is 20).
+        """
+        self.tolerance = tolerance
+
+    def apply(self, image_array, old_color, new_color):
+        """
+        Applies color substitution to an image array.
+
+        Args:
+            image_array (numpy.ndarray): The image as a NumPy array (RGB format).
+            old_color (tuple): The RGB color to replace (e.g., (255, 0, 0)).
+            new_color (tuple): The RGB replacement color (e.g., (0, 255, 0)).
+
+        Returns:
+            numpy.ndarray: The modified image with the color substitution applied.
+        """
+        img = Image.fromarray(image_array)
+        img = img.convert("RGBA")
+        data = img.getdata()
+
+        new_data = []
+        for pixel in data:
+            r, g, b, a = pixel
+            distance = ((r - old_color[0]) ** 2 + (g - old_color[1]) ** 2 + (b - old_color[2]) ** 2) ** 0.5
+            if distance <= self.tolerance:
+                new_data.append(new_color + (a,))
+            else:
+                new_data.append(pixel)
+
+        img.putdata(new_data)
+        return np.array(img.convert("RGB"))
 
 def hex_to_rgb(hex_color):
     # Converts a hex string like '#ff00ff' to an (R, G, B) tuple
@@ -217,19 +352,39 @@ def main():
                 apply = st.button("Apply", key="apply_subst")
                 clear = st.button("Clear All", key="clear_subst")
             if apply:
-                # Figure out which cluster index matches the selected palette color
-                try:
-                    cluster_idx = colors.index(old_color)
-                except ValueError:
-                    st.warning("Selected color is not in the palette. Please copy the hex code from above.")
-                    cluster_idx = None
-                if cluster_idx is not None:
-                    new_rgb = hex_to_rgb(new_color)
-                    color_reducer.set_color_substitution(cluster_idx, new_rgb)
-                    st.rerun()
+                # Convert the selected hex color to RGB
+                old_rgb = hex_to_rgb(old_color)
+                new_rgb = hex_to_rgb(new_color)
+
+                # Use the ColorSubstitutor to apply the substitution
+                substitutor = ColorSubstitutor(tolerance=20)  # You can adjust the tolerance as needed
+                reduced_image_array = np.array(reduced_image)  # Convert PIL Image to NumPy array
+                modified_image_array = substitutor.apply(reduced_image_array, old_rgb, new_rgb)
+
+                # Convert the modified image back to a PIL Image and store it in session state
+                st.session_state["modified_image"] = Image.fromarray(modified_image_array)
+                st.image(st.session_state["modified_image"], use_container_width=True)  # Update the displayed image
+
+                # Update the color mapping in the reducer
+                cluster_idx = palette_rgb.index(old_rgb)  # Find the cluster index for the old color
+                color_reducer.set_color_substitution(cluster_idx, new_rgb)
+
+                # Display the updated color palette and percentages
+                st.subheader("Updated Color Palette and Percentages")
+                updated_percentages = color_reducer.get_color_distribution()
+                cols = st.columns(len(updated_percentages))
+                for i, (color, percentage) in enumerate(updated_percentages):
+                    with cols[i]:
+                        st.markdown(f"""
+                        <div style=\"background-color: {color}; width: 100%; height: 50px; border-radius: 5px;\"></div>
+                        <p style=\"text-align: center;\">{color}<br>{percentage:.1f}%</p>
+                        """, unsafe_allow_html=True)
             if clear:
                 color_reducer.clear_color_substitutions()
-                st.rerun()
+                # Reprocess the reduced image without substitutions
+                reduced_image = color_reducer.reduce_colors()
+                st.session_state.pop("modified_image", None)  # Remove the substituted image from session state
+                st.image(reduced_image, use_container_width=True)  # Update the displayed image
         # PDF export section
         st.subheader("Generate PDF")
         page_size = st.selectbox("Select page size", ['A4', 'A3', 'A2', 'A1', 'A0'])
