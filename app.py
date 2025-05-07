@@ -24,28 +24,58 @@ class ColorReducer:
         self.color_mapping = {}
         
     def reduce_colors(self):
+        # Ensure the image is in RGB mode
+        if self.image.mode != "RGB":
+            self.image = self.image.convert("RGB")
+            print("Converted image to RGB mode")
+
         # Convert the input image to a numpy array (RGB)
         img_array = np.array(self.image)
+        print(f"Input image shape: {img_array.shape}, dtype: {img_array.dtype}")
+        print(f"Input image pixel range: {img_array.min()} to {img_array.max()}")
+
+        # If the image is grayscale (single channel), convert it to RGB
+        if len(img_array.shape) == 2 or img_array.shape[-1] == 1:
+            img_array = cv2.cvtColor(img_array, cv2.COLOR_GRAY2RGB)
+            print("Converted grayscale image to RGB")
+
         # If the image has an alpha channel, let's just ignore it
         if img_array.shape[-1] == 4:
             img_array = img_array[..., :3]
+            print("Removed alpha channel from image")
+
+        # Ensure the image is in the correct format
+        img_array = np.clip(img_array, 0, 255).astype(np.uint8)
+
         # LAB color space is more perceptually uniform, so let's use that for clustering
         img_lab = cv2.cvtColor(img_array, cv2.COLOR_RGB2LAB)
+        print(f"LAB values range: {img_lab.min()} to {img_lab.max()}")
+
         # Flatten the image so each pixel is a row
         pixels_lab = img_lab.reshape(-1, 3)
+
         # KMeans will find the n most prominent colors in LAB space
-        kmeans = KMeans(n_clusters=self.n_colors, random_state=42)
+        kmeans = KMeans(n_clusters=self.n_colors, init='k-means++', random_state=42)
         self.labels = kmeans.fit_predict(pixels_lab)
         self.colors = kmeans.cluster_centers_
+        print(f"KMeans cluster centers (LAB): {self.colors}")
+        print(f"KMeans labels: {np.unique(self.labels)}")
+
         # Assign each pixel to its cluster's color
         reduced_pixels_lab = self.colors[self.labels]
         reduced_pixels_lab = np.clip(reduced_pixels_lab, 0, 255).astype(np.uint8)
+        print(f"Reduced LAB values range: {reduced_pixels_lab.min()} to {reduced_pixels_lab.max()}")
+
         reduced_img_lab = reduced_pixels_lab.reshape(img_lab.shape)
+
         # Convert back to RGB so we can display and save the image
         reduced_img_rgb = cv2.cvtColor(reduced_img_lab, cv2.COLOR_LAB2RGB)
+        print(f"Reduced RGB values range: {reduced_img_rgb.min()} to {reduced_img_rgb.max()}")
+
         # Apply color substitution using the replace_color logic
         if self.color_mapping:
             reduced_img_rgb = self.apply_color_substitution(reduced_img_rgb)
+
         self.reduced_image = reduced_img_rgb
         return Image.fromarray(np.uint8(self.reduced_image))
 
@@ -137,27 +167,45 @@ class ColorReducer:
         # Figure out how big the image should be on the page (keep aspect ratio)
         img_width, img_height = img.size
         page_width, page_height = page_sizes[page_size]
-        margin = 50  # Give it a nice margin
+        margin = 10  # Give it a nice margin
         max_width = page_width - 2 * margin
         max_height = page_height - 2 * margin
         scale = min(max_width/img_width, max_height/img_height)
         new_width = img_width * scale
         new_height = img_height * scale
         x = (page_width - new_width) / 2
-        y = (page_height - new_height) / 2
+        y = page_height - new_height - margin
         # Save the image temporarily so reportlab can use it
         temp_img_path = "temp_image.png"
         img.save(temp_img_path)
         # Draw the image onto the PDF
         c.drawImage(temp_img_path, x, y, width=new_width, height=new_height)
-        # Add the color palette below the image for reference
-        y_offset = y - 20
-        for color, percentage in self.get_color_distribution():
-            c.setFillColor(color)
-            c.rect(x, y_offset, 20, 20, fill=1)
+        # Add the color palette in a grid format below the image
+        y_offset = y - 30  # Start below the image
+        grid_cols = 8  # Number of columns in the grid
+        cell_size = 25  # Size of each color cell
+        padding = 40  # Padding between cells
+        updated_distribution = self.get_color_distribution()  # Get updated palette and percentages
+        for i, (color, percentage) in enumerate(updated_distribution):
+            col = i % grid_cols
+            row = i // grid_cols
+            cell_x = margin + col * (cell_size + padding)
+            cell_y = y_offset - row * (cell_size + padding)
+            if cell_y < margin:  # If we run out of space, start a new page
+                c.showPage()
+                y_offset = page_height - margin
+                cell_y = y_offset - row * (cell_size + padding)
+            # Draw the color cell
+            c.setFillColorRGB(
+                int(color[1:3], 16) / 255.0,
+                int(color[3:5], 16) / 255.0,
+                int(color[5:7], 16) / 255.0
+            )  # Convert hex to RGB for ReportLab
+            c.rect(cell_x, cell_y, cell_size, cell_size, fill=1)
+            # Add the color hex code and percentage below the cell
             c.setFillColor('black')
-            c.drawString(x + 30, y_offset + 5, f"{color} ({percentage:.1f}%)")
-            y_offset -= 25
+            c.setFont("Helvetica", 8)
+            c.drawString(cell_x, cell_y - 10, f"{color} ({percentage:.1f}%)")
         c.save()
         buffer.seek(0)
         # Clean up the temp file
